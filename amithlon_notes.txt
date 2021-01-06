@@ -1,0 +1,125 @@
+umisef 
+	
+Re: Amithlon - Complete install guides and patches/info
+Posted on 25-Apr-2018 13:09:01 		[ #29 ]
+Super Member
+Joined: 19-Jun-2005
+Posts: 1673
+From: Melbourne, Australia
+	
+
+@Hypex
+
+Quote:
+I would have thought the MMU could be used for any translation.
+
+
+It was a design decision. There were three separate views of memory in a system like Amithlon --- the 68k's view of memory, the x86's view of memory, 
+and the PCI bus's view of memory. For mixed-mode programming to be anything other than a complete nightmare, the first two have to match. 
+And to make drivers for DMA-using PCI devices easier, it's really helpful if all three views are identical. In theory, AmigaOS is prepared 
+for peripherals' view to be different from the processor's, and there are routines that drivers should call to do the translation between views. 
+However, on a lot of real Amiga hardware, that translation wasn't necessary, so to not introduce extra complications for Amiga programmers, I decided to make all views identical.
+
+Which is easier said than done --- the address space for PCI expansions on 32 bit x86 is in the 3GB to 4GB range. Unfortunately, in a linux x86 system, 
+that's where the kernel expects to be mapped. So for a 1:1 mapping, the PCI space has to be moved.
+
+Quote:
+But there was less memory back then.
+
+
+Exactly, 1GB was almost unheard of amounts of actual memory, so moving the PCI space to the 1GB to 2GB range (the 2GB to 3GB was used for the actual 
+executable, in the only bit of memory which wasn't 1:1 mapped) was a perfectly sensible thing to do.
+
+Presumably, most memory controllers could be reprogrammed to have a memory hole at 1GB prior to shifting the PCI space, but unlike PCI, they are much 
+less documented.
+
+
+These days, my approach would be very different --- use a 64 bit kernel, with the kernel safely tucked away a long way beyond the 4GB, and leave the PCI 
+where it is (and where space for it has been set aside by the BIOS/firmware). But Amithlon was 18 years ago, so that wasn't an option.
+
+
+
+
+umisef 
+	
+Re: AMIthlon - Drivers Help required...and is anyone else even trying to still use this?
+Posted on 25-Aug-2011 20:41:18 		[ #9 ]
+Super Member
+Joined: 19-Jun-2005
+Posts: 1673
+From: Melbourne, Australia
+	
+
+@Belxjander
+
+Quote:
+so I don't know why everyone else has any kind of memory limitation issue
+
+
+The problem is that one of the first things the Amithlon kernel does is to reprogram all the PCI devices, 
+shifting them downwards in the address space by 2GB[1]. Depending on the motherboard, BIOS, and installed components, 
+*some* address space in the 1-2GB range will be taken up; It might be right at 1GB, or it might only start at 1.5GB, 
+or 1.2, or anywhere else. And while PCI mappings tend to actually have priority over RAM on the physical, hardware side, 
+*linux* gets unhappy when some area it considers to be RAM suddenly fails to return the values written to it....
+
+So yes, give the kernel parameter a shot. May be worth it :)
+
+
+[1]: That's because they are usually in the 3GB-4GB range. Amithlon's memory handling is very Amiga-like, 
+in that the MMU is essentially transparent, and thus physical and logical addresses are identical. But because Amithlon 
+*is* running as an x86 linux task, and x86 linux reserves the top GB of address space for the kernel, it is not possible 
+to map PCI devices in the 3-4GB range with a 1:1 mapping. But I could manage to make the 1-2GB range available, so 
+shifting the PCI devices there solves the problem.
+
+Last edited by umisef on 26-Aug-2011 at 03:29 AM.
+
+
+
+http://eab.abime.net/showthread.php?t=64172
+
+bernd roesch
+Join Date: Apr 2012
+Location: germany
+Posts: 130 
+
+
+bernie told some years ago how amithlon JIT work. the trick is not the simple chipset emulation, the trick is that 
+amithlon JIT Code need not check every CPU branch command if a chipset event happen. this JIT commands need 
+save and restore the CPU Flags for the current amiga JIT code (because the check for chipset event trash the 
+CPu flags for amiga code). and CPU Flag save and restore commands(i did not know how they are named) cost extra 
+cycle on time in modern CPU, because it need sync the CPU (to get all results in order now)
+
+this speedup code with short loops and many branch commands.
+
+Amithlon have a own helper thread for chipset event timing. If this thread notice a chipset event 
+need now process(because time is right) it change the MMU table so the amithlon main thread run 
+into illegal mem accesss exception and the main thread know that now the chipset need emulate.
+
+A simpler chipset did not give lots speedup, because on fast system the chipset code need less time, to exexute 
+
+
+http://www.amicue.org/ArchNewsLetter/2002Dec.pdf
+
+Q: So what about at least releasing the improved JIT back to UAEA: That wouldn’t work, anyway. 
+The reason those improvements are not in the UAE JIT is not that I wanted to hold back UAE-JIT in any way. 
+If you look at the latest source snapshot for UAE-JIT on http://byron.csse.monash.edu.au 
+(or you can look at UAE-JIT/QNX sources shipped on the AmigaOS XL  CD  if  you  have  it),  
+you  will  find  quite  a  bit  of  code  in  compemu_support.c  which  was  trying  to  
+implement some of those improvements in UAE-JIT. I couldn’t make it work. 
+This stuff doesn’t work in UAE-JIT  because  the  concept  of  “time”  in  UAE  is  derived  from  counting  instructions.  
+After  every  instruction, a counter is incremented; 
+Certain system events (e.g. interrupts) are scheduled to happen at  a  certain  “time”,  i.e.  when  
+the  counter  reaches  a  certain  value.  In  contrast,  time  in  Amithlon  is  handled by 
+the modified kernel. It keeps track of when a system event is supposed to happen 
+(and also of when an “unexpectable” external event, such as a keypress, did happen). 
+This means the JIT compiler can create long instruction sequences without worrying 
+about that counter (which doesn’t exist anymore). Related to that is the lack of custom chip emulation. 
+To emulate the interplay between the  68k  and  the  custom  chips  in  a  real  Amiga,  
+timing  between  CPU  emulation  and  custom  chip  emulation must be very precisely synchronized. 
+The recent UAE releases even have a cycle-precise mode for this. The Amithlon JIT just doesn’t fit in 
+with that sort of requirement. And then, of course, there is the rather awful performance optimization 
+that uses the MMU and a kernel modification to speed  up  end-of-block  checks.  
+You  simply  can’t  do  that  sort  of  thing  trying  to  run  on  a  general-purpose kernel; 
+And even if you could, you shouldn’t. It’s an atrocious hack, the kind the hacker in me delights in, 
+and the university educated computer scientist in me is horrified by :)
+
