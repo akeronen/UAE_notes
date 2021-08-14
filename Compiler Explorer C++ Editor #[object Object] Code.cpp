@@ -1,0 +1,172 @@
+// Type your code here, or load an example.
+/*
+int square(int num) {
+    return num * num;
+}
+*/
+
+#define REGPARAM __attribute__((regparm(3)))
+#ifndef REGPARAM2
+# define REGPARAM2 REGPARAM
+#endif
+
+/* If char has more then 8 bits, good night. */
+typedef unsigned char  uae_u8;
+typedef signed char    uae_s8;
+typedef unsigned short uae_u16;
+typedef short          uae_s16;
+
+typedef unsigned int   uae_u32;
+typedef int            uae_s32;
+typedef uae_u32        uaecptr;
+
+#define CPUFUNC(x) x##_ff
+
+
+struct flag_struct {
+    unsigned short int cznv;
+    unsigned short int x;
+};
+
+typedef char flagtype;
+
+struct regstruct
+{
+    uae_u32 regs[16];
+    struct flag_struct ccrflags;
+
+    uae_u32 pc;
+    uae_u8 *pc_p;
+    uae_u8 *pc_oldp;
+
+    uae_u16 irc;
+    uae_u16 ir;
+
+    uae_u32 spcflags;
+
+    uaecptr  usp,isp,msp;
+    uae_u16 sr;
+    flagtype t1;
+    flagtype t0;
+    flagtype s;
+    flagtype m;
+    flagtype x;
+    flagtype stopped;
+    unsigned int intmask;
+
+    uae_u32 vbr;
+
+/*
+#ifdef FPUEMU
+    fptype fp_result;
+
+    fptype fp[8];
+
+    uae_u32 fpcr,fpsr,fpiar;
+    uae_u32 fpsr_highbyte;
+#endif
+*/
+
+    uae_u32 sfc, dfc;
+
+    uae_u32 kick_mask;
+    uae_u32 address_space_mask;
+
+    uae_u8 panic;
+    uae_u32 panic_pc, panic_addr;
+
+} regs, lastint_regs;
+
+#define STATIC_INLINE static inline
+# define MEMORY_RANGE_MASK	(~0)
+
+#define call_mem_put_func(func,addr,v) ((*func)(addr,v))
+#define longput(addr,l) (call_mem_put_func(get_mem_bank(addr).lput, addr, l))
+
+typedef void (*mem_put_func)(uaecptr, uae_u32) REGPARAM;
+
+typedef struct {
+    /* These ones should be self-explanatory... */
+//    mem_get_func lget, wget, bget;
+    mem_put_func lput, wput, bput;
+    /* Use xlateaddr to translate an Amiga address to a uae_u8 * that can
+     * be used to address memory without calling the wget/wput functions.
+     * This doesn't work for all memory banks, so this function may call
+     * abort(). */
+//    xlate_func xlateaddr;
+    /* To prevent calls to abort(), use check before calling xlateaddr.
+     * It checks not only that the memory bank can do xlateaddr, but also
+     * that the pointer points to an area of at least the specified size.
+     * This is used for example to translate bitplane pointers in custom.c */
+//    check_func check;
+    /* For those banks that refer to real memory, we can save the whole trouble
+       of going through function calls, and instead simply grab the memory
+       ourselves. This holds the memory address where the start of memory is
+       for this particular bank. */
+    uae_u8 *baseaddr;
+} addrbank;
+
+# define MEMORY_BANKS		65536
+
+addrbank *mem_banks[MEMORY_BANKS];
+
+#define bankindex(addr) (((uaecptr)(addr)) >> 16)
+
+#define get_mem_bank(addr) (*mem_banks[bankindex(addr)])
+
+STATIC_INLINE void put_long(uaecptr addr, uae_u32 l)
+{
+    addr &= MEMORY_RANGE_MASK;
+    longput(addr, l);
+}
+
+
+typedef void (*mem_put_func)(uaecptr, uae_u32) REGPARAM;
+
+STATIC_INLINE uaecptr m68k_getpc (struct regstruct *regs)
+{
+    return regs->pc + ((char *)regs->pc_p - (char *)regs->pc_oldp);
+}
+
+#define m68k_dreg(r,num) ((r)->regs[(num)])
+#define m68k_areg(r,num) (((r)->regs + 8)[(num)])
+
+STATIC_INLINE uae_u32 do_get_mem_word (uae_u16 *a)
+{
+    uae_u32 retval;
+
+#ifdef X86_PPRO_OPT
+    __asm__ ("movzwl %w1,%k0\n\tshll $16,%k0\n\tbswap %k0\n" : "=&r" (retval) : "m" (*a) : "cc");
+#else
+    __asm__ ("xorl %k0,%k0\n\tmovw %w1,%w0\n\trolw $8,%w0" : "=&r" (retval) : "m" (*a) : "cc");
+#endif
+    return retval;
+}
+
+#define get_iword(regs, o) do_get_mem_word((uae_u16 *)((regs)->pc_p + (o)))
+
+#define m68k_incpc(regs, o) ((regs)->pc_p += (o))
+
+/* Every Amiga hardware clock cycle takes this many "virtual" cycles.  This
+ * used to be hardcoded as 1, but using higher values allows us to time some
+ * stuff more precisely.
+ * 512 is the official value from now on - it can't change, unless we want
+ * _another_ config option "finegrain2_m68k_speed".
+ *
+ * We define this value here rather than in events.h so that gencpu.c sees
+ * it.
+ */
+#define CYCLE_UNIT 512
+
+unsigned long REGPARAM2 CPUFUNC(op_487a_0)(uae_u32 opcode, struct regstruct *regs)
+{
+{{	uaecptr srca = m68k_getpc (regs) + 2;
+	srca += (uae_s32)(uae_s16)get_iword (regs, 2);
+{	uaecptr dsta;
+	dsta = m68k_areg (regs, 7) - 4;
+	m68k_areg (regs, 7) = dsta;
+	put_long (dsta,srca);
+
+}}}	m68k_incpc (regs, 4);
+return CYCLE_UNIT / 2 * 16;
+}

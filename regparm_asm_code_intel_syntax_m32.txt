@@ -1,0 +1,92 @@
+put_long(unsigned int, unsigned int):
+        push    %ebp
+        mov     %ebp, %esp
+        sub     %esp, 8
+        mov     DWORD PTR [%ebp-4], %eax
+        mov     DWORD PTR [%ebp-8], %edx
+        mov     %eax, DWORD PTR [%ebp-4]
+        shr     %eax, 16
+        mov     %eax, DWORD PTR mem_banks[0+%eax*4]
+        mov     %ecx, DWORD PTR [%eax]
+        mov     %edx, DWORD PTR [%ebp-8]
+        mov     %eax, DWORD PTR [%ebp-4]
+        call    %ecx
+        leave
+        ret
+m68k_getpc(regstruct*):
+        push    %ebp
+        mov     %ebp, %esp
+        push    %ebx
+        sub     %esp, 4
+        mov     DWORD PTR [%ebp-8], %eax
+        mov     %eax, DWORD PTR [%ebp-8]
+        mov     %ecx, DWORD PTR [%eax+68]
+        mov     %eax, DWORD PTR [%ebp-8]
+        mov     %eax, DWORD PTR [%eax+72]
+        mov     %edx, %eax
+        mov     %eax, DWORD PTR [%ebp-8]
+        mov     %eax, DWORD PTR [%eax+76]
+        mov     %ebx, %edx
+        sub     %ebx, %eax
+        mov     %eax, %ebx
+        lea     %eax, [%ecx+%eax]
+        add     %esp, 4
+        pop     %ebx
+        leave
+        ret
+do_get_mem_word(unsigned short*):
+        push    %ebp
+        mov     %ebp, %esp
+        sub     %esp, 20
+        mov     DWORD PTR [%ebp-20], %eax
+        mov     %eax, DWORD PTR [%ebp-20]
+        xorl %edx,%edx
+        movw WORD PTR [%eax],%dx
+        rolw $8,%dx
+        mov     %eax, %edx
+        mov     DWORD PTR [%ebp-4], %eax
+        mov     %eax, DWORD PTR [%ebp-4]
+        leave
+        ret
+op_487a_0_ff(unsigned int, regstruct*):
+        push    %ebp
+        mov     %ebp, %esp
+        sub     %esp, 24
+        mov     DWORD PTR [%ebp-20], %eax
+        mov     DWORD PTR [%ebp-24], %edx
+        mov     %eax, DWORD PTR [%ebp-24]
+        call    m68k_getpc(regstruct*)
+        add     %eax, 2
+        mov     DWORD PTR [%ebp-8], %eax
+        mov     %eax, DWORD PTR [%ebp-24]
+        mov     %eax, DWORD PTR [%eax+72]
+        add     %eax, 2
+        call    do_get_mem_word(unsigned short*)
+        cwde
+        add     DWORD PTR [%ebp-8], %eax
+        mov     %eax, DWORD PTR [%ebp-24]
+        add     %eax, 60
+        mov     %eax, DWORD PTR [%eax]
+        sub     %eax, 4
+        mov     DWORD PTR [%ebp-4], %eax
+        mov     %eax, DWORD PTR [%ebp-24]
+        lea     %edx, [%eax+60]
+        mov     %eax, DWORD PTR [%ebp-4]
+        mov     DWORD PTR [%edx], %eax
+        mov     %edx, DWORD PTR [%ebp-8]
+        mov     %eax, DWORD PTR [%ebp-4]
+        call    put_long(unsigned int, unsigned int)
+        mov     %eax, DWORD PTR [%ebp-24]
+        mov     %eax, DWORD PTR [%eax+72]
+        lea     %edx, [%eax+4]
+        mov     %eax, DWORD PTR [%ebp-24]
+        mov     DWORD PTR [%eax+72], %edx
+        mov     %eax, 4096
+        leave
+        ret
+regs:
+        .zero   144
+lastint_regs:
+        .zero   144
+mem_banks:
+        .zero   262144
