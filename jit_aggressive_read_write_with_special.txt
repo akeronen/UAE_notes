@@ -1,0 +1,247 @@
+JIT: aggressive memory read & write
+
+There is one more performance killer --- 68k instructions that access memory
+(and let's face it, that's most of them ;-). Unfortunately, the 68k uses
+memory mapped I/O, so an innocent mov.l (A1+),(A0+) could access just
+about *anything*, depending on the values of A1 and A0. This means that
+each memory access has to go through several steps --- first, the address
+gets shifted 16 bits to the right and the result taken as an index into a
+lookup table. That yields a pointer to a structure; In that structure,
+the addresses of handler routines for reading and writing bytes, words or
+longwords can be found. So one more memory access gets the address of an
+appropriate handler, which then gets called (yep, a calculated subroutine
+call for every single memory access!). The handlers for "real" memory
+then mask the address, add it to the base address for their memory segment,
+and perform the requested operation. This takes a *lot* of time. It also
+(potentially) clobbers many registers, so that the instruction handler 
+routine often has to temporarily store stuff on the stack to keep it
+past the memory access.
+
+Memory Access
+=============
+
+The *vast* majority of memory accesses are to "real" memory. The JIT
+compiler has two methods for speeding these up.
+The first method is simple, safe and a good bit faster than the default
+memory access (see above). For this method, instead of having a lookup
+table with 65536 pointers to structures that tell us how to get to memory,
+we have another table with 65536 values (*). For memory areas which are 
+*not* real memory, this table holds the same info as the other one,
+except that the LSB is set. However, for memory areas which *are* 
+real memory, this table holds the difference between the address the
+x86 sees and the address the emulated Amiga sees. 
+So a memory access looks up the content of the appropriate slot in the
+table. If the LSB is set, the usual song and dance has to be done. But
+if the LSB is clear, we simply add the Amiga address to what we got
+from the table, and voila, there is the x86 address of real memory,
+from which we can load (or to which we can write) our value, without
+calling any C routines, and without clobbering registers. 
+
+
+(*) The JIT table for aggressive read & write
+
+uae_u8 *baseaddr[65536];
+
+
+
+// Set by each memory handler that does not simply access real memory.
+int special_mem;
+#define S_READ 1
+#define S_WRITE 2
+
+-  Initialization of such (**):
+
+#define put_mem_bank(addr, b, realstart) do { \
+  (mem_banks[bankindex(addr)] = (b)); \
+  if ((b)->baseaddr) \
+    baseaddr[bankindex(addr)]=(b)->baseaddr-(realstart); \		(***)
+  else \
+    baseaddr[bankindex(addr)]=(uae_u8*)(((long)b)+1); \
+} while (0)
+
+In short: if doing cpu_ops for a new block does not set special_mem, use aggressive read / writes for JIT pseudo code:
+
+
+	*******************************************************************************************************
+	(**) Initialized part: if mem_bank was not initialised with own baseaddr, so calculate baseaddr[] with LSB not set (***)		
+
+	while cpu_ops for a new block: 			(WILL USE MEM_HANDLERS ALWAYS)
+		mem_handler will set special_mem as set ==> S_READ (bitwise or) S_WRITE 
+
+	after previous and (counts > 5 ??) starting to do JIT compile block for same part:
+		if special_mem bits was SET (ACCESSING NOT REAL MEMORY)
+				--> needs mem_handler style of operation (like with cpu_ops)
+		else CAN USE aggressive reads / writes to mem for this entire compile block (using ***)
+	*******************************************************************************************************
+
+
+	How it actually shows:
+		cpumeu.c	=> get_byte / put_byte
+		compemu.c	=> read_byte / write_byte
+
+
+
+	unsigned long REGPARAM2 CPUFUNC(op_10_0)(uae_u32 opcode) // OR
+		{
+			uae_u32 dstreg = opcode & 7;
+		{{	uae_s8 src = get_ibyte(2);
+		{	uaecptr dsta = m68k_areg(regs, dstreg);
+		{	uae_s8 dst = get_byte(dsta);				<-- get byte
+			src |= dst;
+			CLEAR_CZNV;
+			SET_ZFLG (((uae_s8)(src)) == 0);
+			SET_NFLG (((uae_s8)(src)) < 0);
+			put_byte(dsta,src);
+		}}}}m68k_incpc(4);
+		return 4096;
+		}
+
+	--------------------------------------------------------------------------------
+	#define byteput_1 byteput
+
+	STATIC_INLINE void put_byte(uaecptr addr, uae_u32 b)
+	{
+		byteput_1(addr, b);
+	}
+
+	#define byteput(addr,b) (call_mem_put_func(get_mem_bank(addr).bput, addr, b))	<-- ALWAYS USING mem_handlers
+
+	for example:
+		void REGPARAM2
+		dummy_wput(uaecptr addr, uae_u32 w)
+		{
+			special_mem |= S_WRITE;			<-- will set special "ON"
+			---
+	--------------------------------------------------------------------------------
+
+	In JIT code:
+
+	unsigned long REGPARAM2 op_10_0_comp_ff(uae_u32 opcode) // OR
+		{
+			uae_u32 dstreg = opcode & 7;
+			uae_u32 dodgy=0;
+			uae_u32 m68k_pc_offset_thisinst=m68k_pc_offset;
+			m68k_pc_offset+=2;
+		{	uae_u8 scratchie=S1;
+		{	int src = scratchie++;
+			mov_l_ri(src,(uae_s32)(uae_s8)comp_get_ibyte((m68k_pc_offset+=2)-2));
+		{	int dsta=dodgy?scratchie++:dstreg+8;
+			if (dodgy) 
+				mov_l_rr(dsta,dstreg+8);
+		{	int dst=scratchie++;
+			readbyte(dsta,dst,scratchie);			<-- readbyte
+			dont_care_flags();
+		{	start_needflags();
+			or_b(dst,src);
+			live_flags();
+			end_needflags();
+		}	writebyte(dsta,dst,scratchie);
+		}}}}	 if (m68k_pc_offset>100) sync_m68k_pc();
+		return 0;
+		}
+
+
+	void
+	readbyte(int address, int dest, int tmp)
+	{
+		int distrust;
+
+		switch (currprefs.comptrustbyte)
+		{
+			case 0:
+				distrust = 0;
+				break;
+			case 1:
+				distrust = 1;
+				break;
+			case 2:
+				distrust = ((start_pc & 0xF80000) == 0xF80000);
+				break;
+			case 3:
+				distrust = !have_done_picasso;
+				break;
+			default:
+				abort();
+		}
+
+		if ((special_mem & S_READ) || distrust)
+			readmem_special(address, dest, 8, 1, tmp);
+		else
+			readmem_real(address, dest, 8, 1, tmp);
+	}
+
+
+
+
+	#define writemem_special writemem
+	#define readmem_special  readmem
+
+	static __inline__ void
+	readmem(int address, int dest, int offset, int size, int tmp)
+	{
+		int f = tmp;
+
+		mov_l_rr(f, address);
+		shrl_l_ri(f, 16);	// The index into the mem bank table
+		mov_l_rm_indexed(f, (uae_u32) mem_banks, f, 4);
+		// Now f holds a pointer to the actual membank
+		mov_l_rR(f, f, offset);
+		// Now f holds the address of the b/w/lget function
+		call_r_11(dest, f, address, size, 4);
+		forget_about(tmp);
+	}
+
+
+
+
+	static void
+	readmem_real(int address, int dest, int offset, int size, int tmp)
+	{
+		int f = tmp;
+
+		if (size == 4 && address != dest)
+			f = dest;
+
+	#ifdef NATMEM_OFFSET
+		if (canbang)
+		{	// Woohoo! go directly at the memory!
+			switch (size)
+			{
+				case 1:
+					mov_b_brR(dest, address, NATMEM_OFFSET);
+					break;
+				case 2:
+					mov_w_brR(dest, address, NATMEM_OFFSET);
+					bswap_16(dest);
+					break;
+				case 4:
+					mov_l_brR(dest, address, NATMEM_OFFSET);
+					bswap_32(dest);
+					break;
+			}
+			forget_about(tmp);
+			return;
+		}
+	#endif
+
+		mov_l_rr(f, address);
+		shrl_l_ri(f, 16);	// The index into the baseaddr table 
+		mov_l_rm_indexed(f, (uae_u32) baseaddr, f, 4);
+		// f now holds the offset
+
+		switch (size)
+		{
+			case 1:
+				mov_b_rrm_indexed(dest, address, f, 1);
+				break;
+			case 2:
+				mov_w_rrm_indexed(dest, address, f, 1);
+				bswap_16(dest);
+				break;
+			case 4:
+				mov_l_rrm_indexed(dest, address, f, 1);
+				bswap_32(dest);
+				break;
+		}
+		forget_about(tmp);
+	}
