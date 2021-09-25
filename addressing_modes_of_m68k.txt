@@ -1,0 +1,258 @@
+
+Ref: Scarpazza-2005-68k-1-addressing.pdf    categories #1 - #18
+
+-------------------------------------------------------------------
+In the description we use:
+
+An		for address register;
+Dn		for data register;
+Rn		for address or data register;
+Xn		for index register (either data or address register);
+PC		for program counter;
+d8		for 8 bit displacement integer;
+d16		for 16 bit displacement integer;
+bd		for base displacement (may be null, word or long);
+od		for outer displacement (may be null, word or long).
+-------------------------------------------------------------------
+
+
+● Register Direct
+– Data #1
+	Example: MOVE.L D0, D1				; register D0 contained value to D1
+	
+	- Assembly syntax: Dn
+	
+– Address #2
+	Example: MOVE.L A0, D1				; register A0 contained value to D1
+
+	- Assembly syntax: An
+
+● [Address] Register Indirect
+– Address #3
+	Example: MOVE.L D0, (A0)			; register D0 contained value to A0 pointed address
+	Example: MOVE.B (A0), (A1)			; register A0 pointed value to A1 pointed address
+
+	- Assembly syntax: (An)
+
+– Address with Postincrement #4
+	Example: MOVE.W (A0)+, (A1)+		; register A0 pointed 16-bit value to A1 pointed address, increase A0 & A1 (+2 => W)
+	Example: MOVE.W (A0)+, D0			; register A0 pointed 16-bit value to D0, increase A0 (+2 => W)
+	Example: MOVE.W D0, (A0)+			; register D0 contained 16-bit value to A0 pointed value, increase A0 (+2 => W)
+	Example: MOVE.B D0, (A7)+			; A7 = SP, register D0 contained 8-bit value to A7 pointed value, increase A7 (ALWAYS +2 => W)
+
+	- Assembly syntax: (An)+
+
+– Address with Predecrement #5
+	Example: MOVE.W -(A0), -(A1)		; decrease A0 & A1 (-2 => W), register A0 pointed value to A1 pointed address
+	Example: MOVE.B D0, -(A7)			; A7 = SP, decrease A7 (ALWAYS -2 => W), register D0 contained 8-bit value to A7 pointed value
+
+	- Assembly syntax: -(An)
+
+– Address with Displacement #6
+	Example: MOVE.W $5180(A4), D0		; 16-bit value A4 pointed + $5180 hex value to D0
+	Example: CPMI.W #$1111, $140(A1)	; 0x1111 16-bit value to A1 pointed valued increased by $140
+
+	- Assembly syntax: (d16,An)
+
+	- It refers to contents of memory at address formed by adding a displacement to contents of An. 
+	Syntax: disp(An) or modern assemblers accept (disp,An)
+	- Assembly syntax: (d16,An) / d16(An)
+
+	Motorola: 2.2.6 Address Register Indirect with Displacement Mode
+	
+	https://www.cs.mcgill.ca/~cs573/fall2002/notes/lec273/lecture10/
+	Motorola syntax:    (d16,An) or d16(An)
+                        (the latter form is older)
+	Example: MOVE.B (20,A3), D1
+	Example: MOVE.B (-$05,A0), D2
+
+● Address Register Indirect with Index
+– 8-Bit displacement #7
+	Example: MOVE.W $2(A0,D1.B), D0
+	Example: CMPI.W #$1111, ($4,A0,D1.W)
+	
+	- Assembly syntax: (d8,An,Xn.B)
+	
+	Motorola: 2.2.7 Address Register Indirect with Index (8-Bit Displacement) Mode 
+	
+	The standard syntax used by manuals is (d8, An, Dn.SIZE), where SIZE can be either B or W or L
+	
+	https://www.cs.mcgill.ca/~cs573/fall2002/notes/lec273/lecture10/
+	- Motorola syntax: (d8,An,Xn.W) or (d8,An,Xn.L)
+			MOVE.L (2,A0,D3.W),D1
+			MOVE.W (4,A0,D2.L),D0
+	
+	http://tack.sourceforge.net/olddocs/m68020.html#2.2.1.6.%20Address%20Register%20Indirect%20With%20Index	
+	2.2.1.6. Address Register Indirect With Index
+	The address of the operand is the sum of the contents of the address register, the possibly sign extended 
+	contents of index register and the sign extended 8-bit displacement.
+	
+– Base displacement #8
+	Example: MOVE.W $2(A0,D1.W), D0
+	
+	- Assembly syntax: (bd,An,Xn)
+					   (bd,An,Xn.size*scale) (MC68020 only)
+
+	Motorola: 2.2.8 Address Register Indirect with Index (Base Displacement) Mode
+	
+	displacement(An,Rn) accesses the memory at (An+disp+Rn). Rn is the index and may be D or A register.
+	
+	http://tack.sourceforge.net/olddocs/m68020.html#2.2.2.1.%20Address%20Register%20Indirect%20With%20Index%20(Base%20Displacement)	
+	2.2.2.1. Address Register Indirect With Index (Base Displacement)
+	The address of the operand is the sum of the contents of the address register, the scaled contents of 
+	the possibly scaled index register and the possibly sign extended base displacement. When the program 
+	counter is used instead of the address register, the value in the program counter is the address of 
+	the full format extension word. This mode requires one or two more extension words when the size of 
+	the base displacement is word or long respectively.
+
+	Note that without the index operand, this mode is an extension of the Address Register Indirect With 
+	Displacement mode; when using the MC68020 one is no longer limited to a 16-bit displacement. Also note 
+	that with the index operand added, this mode is an extension of the Address Register Indirect With Index mode; 
+	when using the MC68020 one is no longer limited to an 8-bit displacement.
+	
+
+● Memory indirect
+– Postindexed #9
+
+	- Assembly syntax: ([bd,An],Xn,od)
+					   ([bd,An],Xn.size*scale,od) (MC68020 only)
+
+	Motorola: 2.2.9 Memory Indirect Postindexed Mode 
+	
+	http://tack.sourceforge.net/olddocs/m68020.html#2.2.2.2.%20Memory%20Indirect%20Post-Indexed
+	2.2.2.2. Memory Indirect Post-Indexed
+	This mode may use an outer displacement. First an intermediate memory address is calculated by adding 
+	the contents of the address register and the possibly sign extended base displacement. This address is 
+	used for in indirect memory access of a long word, followed by adding the index operand (scaled and 
+	possibly signed extended). Finally the outer displacement is added to yield the address of the operand. 
+	When the program counter is used, the value in the program counter is the address of the full format extension word.
+
+– Preindexed #10
+
+	- Assembly syntax: ([bd,An,Xn],od)
+					   ([bd,An,Xn.size*scale],od) (MC68020 only)
+
+	Motorola: 2.2.10 Memory Indirect Preindexed Mode
+	
+	http://tack.sourceforge.net/olddocs/m68020.html#2.2.2.3.%20Memory%20Indirect%20Pre-Indexed
+	2.2.2.3. Memory Indirect Pre-Indexed
+	This mode may use an outer displacement. First an intermediate memory address is calculated by adding 
+	the contents of the address register, the scaled contents of the possibly sign extended index register 
+	and the possibly sign extended base displacement. This address is used for an indirect memory access of 
+	a long word, followed by adding the outer displacement to yield the address of the operand. When the program 
+	counter is used, the value in the program counter is the address of the full format extension word.
+	
+*******************************************************************************************************************
+Please note that effective addresses expressed with Program Counter Relative can only be used to read from memory.	
+*******************************************************************************************************************	
+
+● Program Counter Indirect
+– with Displacement #11
+
+							Useful to access memory relative to the current value of the Program Counter.
+							-> reading constants in code segments
+
+							TABLE:		DC.B $20			* table inside the code segment
+									DC.B $32			*
+									DC.B $64			*
+							TABLE_END:
+									MOVE.B	TABLE, D0		* moves TABLE[0] into D0
+									MOVE.B	TABLE+1, D1		* moves TABLE[1] into D1
+
+	Example: ADD -$100(PC), D2
+
+	- Assembly syntax: (d16,PC)
+
+	Motorola: 2.2.11 Program Counter Indirect with Displacement Mode
+						(d16,PC)
+
+	- Assembly syntax: (d16,PC) or d16(PC)
+
+● Program Counter Indirect with Index
+– 8-Bit displacement #12
+
+	Example: SUB 5(PC, D0), D1
+
+	- Assembly syntax: (d8,PC,Xn)
+	
+	Motorola: 2.2.12 Program Counter Indirect with Index (8-Bit Displacement) Mode 
+						(d8,PC,Xn)
+	
+
+– Base displacement #13
+
+	- Assembly syntax: (bd,PC,Xn)
+
+							This addressing mode extends the program counter relative mode 
+							to include an index and offset value.
+
+							TABLE:		DC.B $20
+									DC.B $32
+									DC.B $64
+							TABLE_END:
+									MOVE 	#0,A0 			* use A0 as index register
+									MOVE.B	TABLE(A0),D0 		* read TABLE[0] into D0
+									ADD 	#1,A0 			* use A0 as index register
+									MOVE.B	TABLE(A0),D1 		* read TABLE[1] into D1
+
+	Motorola: 2.2.13 Program Counter Indirect with Index (Base Displacement) Mode 
+						(bd,PC,Xn)
+
+● Program Counter Memory Indirect
+– Postindexed #14
+
+	- Assembly syntax: ([bd,PC],Xn,od)
+
+	Motorola: 2.2.14 Program Counter Memory Indirect Postindexed Mode
+						([bd,PC],Xn,od)
+
+– Preindexed #15
+
+	- Assembly syntax: ([bd,PC,Xn],od)
+
+	Motorola: 2.2.15 Program Counter Memory Indirect Preindexed Mode 
+						([bd,PC,Xn],od)
+
+● Absolute Data Addressing
+– Short #16
+	Example: MOVE.W $100, D1		; from address 0x100 a 16-bit value to D1
+	Example: MOVE.W D0, $654321		; D0 value 16-bit to address 0x654321
+	
+	- Assembly syntax: <address>.W	
+	
+	Motorola: 2.2.16 Absolute Short Addressing Mode
+						(xxx).W	
+	
+	
+– Long #17
+	Example: MOVE.L $1000000, D1	; from address 0x1000000 a 32-bit value to D1
+	
+	- Assembly syntax: <address>.L
+	
+	Motorola: 2.2.17 Absolute Long Addressing Mode
+						(xxx).L
+	
+	
+● Immediate #18
+	Example: MOVE.L #100, D1		; a 32-bit value of (# and no $/% means decimal) 100 to D1
+
+	- Assembly syntax: #<data>
+
+	Motorola: 2.2.18 Immediate Data 
+
+● Implied Addressing #19
+	Example: NOP
+
+
+
+--------------------------------------------------------------------------------------------------------
+https://arcb.csc.ncsu.edu/~mueller/codeopt/codeopt00/notes/addmode.html
+Not allowed:
+
+move.w 47(A3),D4 ;OK
+move.w 47(D3),D3 ;no such mode - invalid
+move.w D3(A3),D2 ;no such mode - invalid
+move.w (A4+3),D1 ;no such mode - invalid
+move.w 3+2(A4),D0 ;OK because "3+2" is still a "constant"
+		
+
