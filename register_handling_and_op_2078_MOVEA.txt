@@ -1,0 +1,310 @@
+README.compemu
+
+{
+	uae_s32 srcreg = imm8_table[((opcode >> 1) & 7)];
+	uae_s32 dstreg = (opcode >> 8) & 7;
+        uae_u8 scratchie=S1;
+	int src = scratchie++;
+	mov_l_ri(src,srcreg);
+        {
+		int dst=dstreg+8;
+		int tmp=scratchie++;
+		sign_extend_16_rr(tmp,src);
+		add_l(dst,tmp);
+		mov_l_rr(dstreg+8,dst);
+	}
+}
+
+That's the code that would get called for  "mov.w 3,a0". The way it works
+is like this --- the routine targets an x86-like processor, but one with
+32 registers. The first 16 of these are mapped to D0-D7 and A0-A7; The
+next three hold flags and the instruction pointer, and then there are 13
+scratch registers, S1 to S13. First, the routine works out what register
+and immediate to use. It then calls mov_l_ri(), which will generate code
+to move the immediate into a register (in this case, a scratch register).
+That value then gets sign extended (pointless in this case, but that's 
+what you get for generating these routines with a program...) into yet
+another scratch register, then adds the immediate to the register, and
+moves the result back into the register. But all the translation routine does
+is to call other routines which will (eventually) generate the code.
+
+Writing this sort of code is manageable. In the next layer down, the 32
+register x86 gets mapped onto the real, 7 register PII, i.e. register
+allocation takes place.
+
+
+/********************************************************************
+ * CPU functions exposed to gencomp. Both CREATE and EMIT time      *
+ ********************************************************************/
+
+/*
+ *  RULES FOR HANDLING REGISTERS:
+ *
+ *  * In the function headers, order the parameters
+ *     - 1st registers written to
+ *     - 2nd read/modify/write registers
+ *     - 3rd registers read from
+ *  * Before calling raw_*, you must call readreg, writereg or rmw for
+ *    each register
+ *  * The order for this is
+ *     - 1st call remove_offset for all registers written to with size<4
+ *     - 2nd call readreg for all registers read without offset
+ *     - 3rd call rmw for all rmw registers
+ *     - 4th call readreg_offset for all registers that can handle offsets
+ *     - 5th call get_offset for all the registers from the previous step
+ *     - 6th call writereg for all written-to registers
+ *     - 7th call raw_*
+ *     - 8th unlock all registers that were locked
+ */
+ 
+
+
+-----------------------------------------------------------------------------------------------------------------------------------------------
+									r.regs[]	0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15
+#define m68k_dreg(r,num) ((r).regs[(num)])						d0,d1,d2,d3,d4,d5,d6,d7
+#define m68k_areg(r,num) (((r).regs + 8)[(num)])						                a0,a1,a2,a3,a4,a5,a6,a7
+
+int imm8_table[] = {8, 1, 2, 3, 4, 5, 6, 7};
+ 
+/* Whether classes of instructions do or don't clobber the native flags */
+#define CLOBBER_MOV 							<-- does not
+ 
+static void
+unlock2(int r)
+{
+	Dif(!live.nat[r].locked) abort();
+	live.nat[r].locked--;
+}
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+Different types of move instructions depending if destination is An: 
+	MOVE  src, dst   <== destination is other than An	MOVE Move Data from Source to Destination	Assembler Syntax: MOVE < ea > , < ea >
+	MOVEA src, dst   <== destination is An			MOVEA Move Address				Assembler Syntax: MOVEA < ea > ,An
+
+
+ 
+		      m68k:  src, dst	     ==>   srcreg = address, dstreg = A0 (m68k addr register)
+					
+functionality for:    "mov.w 3,a0"									From above explanation:
+
+	uae_s32 srcreg = imm8_table[((opcode >> 1) & 7)];						First, the routine works out what register
+	uae_s32 dstreg = (opcode >> 8) & 7;								and immediate to use.
+        uae_u8 scratchie=S1;
+	int src = scratchie++;
+	mov_l_ri(src,srcreg);							(1)			It then calls mov_l_ri(), which will generate code
+        {												to move the immediate into a register (in this case, a scratch register).
+		int dst=dstreg+8;
+		int tmp=scratchie++;
+		sign_extend_16_rr(tmp,src);					(2)			That value then gets sign extended (pointless in this case) into yet another scratch register
+		add_l(dst,tmp);							(3)			then adds the immediate to the register
+		mov_l_rr(dstreg+8,dst);						(4)			moves the result back into the register
+	}
+ 
+ 
+
+ 
+(1) mov_l_ri(src,srcreg);
+ 
+MENDFUNC(2, mov_l_ri, (W4 d, IMM s)) MIDFUNC(2, mov_w_ri, (W2 d, IMM s))
+{
+	CLOBBER_MOV;
+	d = writereg(d, 2);				<-- writereg (6th call)
+
+	raw_mov_w_ri(d, s);				<-- raw_ (7th call)
+	unlock2(d);
+}
+
+
+(2) sign_extend_16_rr(tmp,src);
+
+MENDFUNC(2, sign_extend_16_rr, (W4 d, R2 s)) MIDFUNC(2, sign_extend_8_rr, (W4 d, R1 s))
+{
+	int isrmw;
+
+	if (isconst(s))
+	{
+		set_const(d, (uae_s32) (uae_s8) live.state[s].val);
+		return;
+	}
+
+	isrmw = (s == d);
+	CLOBBER_SE8;
+	if (!isrmw)
+	{
+		s = readreg(s, 1);			<-- readreg (2nd call)
+		d = writereg(d, 4);			<-- writereg (6th call)
+	}
+	else
+	{	/* If we try to lock this twice, with different sizes, we
+		 * are int trouble! */
+		s = d = rmw(s, 4, 1);			<-- rmw (3rd call)
+	}
+
+	raw_sign_extend_8_rr(d, s);			<-- raw_ (7th call)
+
+	if (!isrmw)
+	{
+		unlock2(d);
+		unlock2(s);
+	}
+	else
+	{
+		unlock2(s);
+	}
+} 
+ 
+ 
+(3) add_l(dst,tmp);
+
+
+MENDFUNC(2, add_l, (RW4 d, R4 s)) MIDFUNC(2, add_w, (RW2 d, R2 s))
+{
+	if (isconst(s))
+	{
+		COMPCALL(add_w_ri) (d, (uae_u16) live.state[s].val);
+		return;
+	}
+
+	CLOBBER_ADD;
+	s = readreg(s, 2);				<-- readreg (2nd call)
+	d = rmw(d, 2, 2);				<-- rmw (3rd call)
+
+	raw_add_w(d, s);				<-- raw_ (7th call)
+	unlock2(d);
+	unlock2(s);
+}
+
+
+MENDFUNC(2, add_w_ri, (RW2 d, IMM i)) MIDFUNC(2, add_b_ri, (RW1 d, IMM i))
+{
+	if (!i && !needflags)
+		return;
+
+	CLOBBER_ADD;
+	d = rmw(d, 1, 1);				<-- rmw (3rd call)
+
+	raw_add_b_ri(d, i);				<-- raw_ (7th call)
+
+	unlock2(d);
+}
+ 
+ 
+(4) mov_l_rr(dstreg+8,dst);
+
+MENDFUNC(2, mov_l_rr, (W4 d, R4 s)) MIDFUNC(2, mov_l_mr, (IMM d, R4 s))
+{
+	if (isconst(s))
+	{
+		COMPCALL(mov_l_mi) (d, live.state[s].val);
+		return;
+	}
+	CLOBBER_MOV;
+	s = readreg(s, 4);				<-- readreg (2nd call)
+
+	raw_mov_l_mr(d, s);				<-- raw_ (7th call)
+	unlock2(s);
+}
+
+MENDFUNC(2, mov_l_mi, (IMM d, IMM s)) MIDFUNC(2, mov_w_mi, (IMM d, IMM s))
+{
+	CLOBBER_MOV;
+	raw_mov_w_mi(d, s);				<-- raw_ (7th call)
+}
+
+
+----------------------------------------------------------------------------
+
+cpuemu 0.8.21?   implementation:
+
+/* MOVEA.L (xxx).W,An */
+unsigned long REGPARAM2 CPUFUNC(op_2078_0)(uae_u32 opcode, struct regstruct *regs)
+{
+	uae_u32 dstreg = (opcode >> 9) & 7;
+{{	uaecptr srca = (uae_s32)(uae_s16)get_iword (regs, 2);
+{	uae_s32 src = get_long (srca);
+{	m68k_areg (regs, dstreg) = (src);
+	m68k_incpc (regs, 4);
+}}}}return CYCLE_UNIT / 2 * 16;
+}
+
+
+compemu 0.8.21   implementation for same : op_2078_0 with FLAGS
+
+unsigned long REGPARAM2 op_2078_0_comp_ff(uae_u32 opcode) /* MOVEA */
+{
+	uae_u32 dstreg = (opcode >> 9) & 7;
+	uae_u32 dodgy=0;
+	uae_u32 m68k_pc_offset_thisinst=m68k_pc_offset;
+	m68k_pc_offset+=2;
+{	uae_u8 scratchie=S1;
+{	int srca = scratchie++;
+	mov_l_ri(srca,(uae_s32)(uae_s16)comp_get_iword((m68k_pc_offset+=2)-2));
+{	int src=scratchie++;
+	readlong(srca,src,scratchie);
+{	int dst=dodgy?scratchie++:dstreg+8;
+{	int tmps=scratchie++;
+	mov_l_rr(dst,src);
+	if(dstreg+8!=dst)
+		mov_l_rr(dstreg+8,dst);
+}}}}}	 if (m68k_pc_offset>100) sync_m68k_pc();
+return 0;
+}
+
+----------------------------------------------------------------------------
+
+cpuemu_0.c   0.8.29
+
+/* MOVEA.L (xxx).W,An */
+unsigned long REGPARAM2 CPUFUNC(op_2078_0)(uae_u32 opcode, struct regstruct *regs)
+{
+	uae_u32 dstreg = (opcode >> 9) & 7;
+{{	uaecptr srca = (uae_s32)(uae_s16)get_iword (regs, 2);
+{	uae_s32 src = get_long (srca);
+{	m68k_areg (regs, dstreg) = (src);
+	m68k_incpc (regs, 4);
+}}}}return CYCLE_UNIT / 2 * 16;
+}
+
+
+
+compemu.c   0.8.29 implementation for same : op_2078_0 with FLAGS
+
+unsigned long REGPARAM2 op_2078_0_comp_ff(uae_u32 opcode) /* MOVEA */
+{
+	uae_u32 dstreg = (opcode >> 9) & 7;
+	uae_u32 dodgy=0;
+	uae_u32 m68k_pc_offset_thisinst=m68k_pc_offset;
+	m68k_pc_offset+=2;
+{	uae_u8 scratchie=S1;
+{	int srca = scratchie++;
+	mov_l_ri(srca,(uae_s32)(uae_s16)comp_get_iword((m68k_pc_offset+=2)-2));
+{	int src=scratchie++;
+	readlong(srca,src,scratchie);
+{	int dst=dodgy?scratchie++:dstreg+8;
+{	int tmps=scratchie++;
+	mov_l_rr(dst,src);
+	if((uae_u32)dstreg+8!=(uae_u32)dst)
+		mov_l_rr(dstreg+8,dst);
+}}}}}	 if (m68k_pc_offset>100) sync_m68k_pc();
+return 0;
+}
+
+unsigned long REGPARAM2 op_2078_0_comp_nf(uae_u32 opcode) /* MOVEA */
+{
+	uae_u32 dstreg = (opcode >> 9) & 7;
+	uae_u32 dodgy=0;
+	uae_u32 m68k_pc_offset_thisinst=m68k_pc_offset;
+	m68k_pc_offset+=2;
+{	uae_u8 scratchie=S1;
+{	int srca = scratchie++;
+	mov_l_ri(srca,(uae_s32)(uae_s16)comp_get_iword((m68k_pc_offset+=2)-2));
+{	int src=scratchie++;
+	readlong(srca,src,scratchie);
+{	int dst=dodgy?scratchie++:dstreg+8;
+{	int tmps=scratchie++;
+	mov_l_rr(dst,src);
+	if((uae_u32)dstreg+8!=(uae_u32)dst)
+		mov_l_rr(dstreg+8,dst);
+}}}}}	 if (m68k_pc_offset>100) sync_m68k_pc();
+return 0;
+}
