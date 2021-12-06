@@ -1,0 +1,388 @@
+
+
+******************************
+From build perspective:
+******************************
+
+
+1) table68k
+	- pre existing manually produced text file
+	
+	0000 0000 0011 1100:00:XNZVC:XNZVC:10: ORSR.B  #1
+	0000 0000 0111 1100:02:?????:?????:10: ORSR.W  #1
+
+
+Phase 2: generate cpudefs
+
+
+2) build68k      	-> .c into .exe    						build the needed tool to convert table68k into cpudefs.c
+
+2.1) cpudefs.c		-> build68k gets parameter pointing to table68			generates compiler usable defs68k array of isntruction definitions
+
+	#include "sysconfig.h"
+	#include "sysdeps.h"
+	#include "readcpu.h"
+	struct instr_def defs68k[] = {
+	{ 60, 0, {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, 65535, 0, 0, { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }  }, 16, "ORSR.B  #1"},
+	---
+	int n_defs68k = 179;					<-- totalling of this amount of (really implemented) instructions
+
+
+2.2) build: gencpu			-> gencpu.o readcpu.o cpudefs.o			build the needed tool to generate cpuemu.c
+2.3) build: gencomp			-> gencomp.o readcpu.o cpudefs.o		build the needed tool to generate compemu.c
+
+
+
+
+--------------------------------------------------------------------------------------------------------
+How do gencpu ja gencomp get called from Makefile:
+
+
+OBJS = main.o cpudefs.o cpustbl.o  @JITOBJS@
+
+cpudefs.c: tools/build68k @top_srcdir@/src/table68k
+	./tools/build68k <@top_srcdir@/src/table68k >cpudefs.c
+
+cpuemu.c: tools/gencpu
+	./tools/gencpu
+
+compemu.c: tools/gencomp
+	./tools/gencomp
+
+# gencpu also creates cpustbl.c and cputbl.h
+cpustbl.c: cpuemu.c
+cputbl.h: cpuemu.c
+compstbl.c: compemu.c
+comptbl.h: compemu.c
+
+
+--> so from OBJ: cpustbl.o		--> requires cpuemu.c			--> requires ./tools/gencpu to be executed
+
+
+same is with JIT objects:
+
+@JITOBJS@
+
+JITOBJS=""
+if [ "x$WANT_JIT" = "xyes" ]; then
+  JITOBJS="compstbl.o compemu.o compemu_support.o compemu_fpp.o cpustbl_nf.o cpufast_nf.o"
+  ADDITIONAL_CFLAGS="$ADDITIONAL_CFLAGS -DJIT -DNATMEM_OFFSET=0x50000000"
+fi
+
+--> so from OBJ: compstbl.o		--> requires compstbl.c			--> requires ./tools/gencomp to be executed
+
+---------------------------------------------------------------------------------------------------------
+
+
+Phase 3: generate cpu-emu and comp-emu codes:
+
+3.1) call: gencpu									generates cpuemu.c     and cpustbl.c and cputbl.h
+
+3.2) call: gencomp									generates compemu.c    and compstbl.c comptbl.h
+
+
+---------------------------------------------------------------------------------------------------------
+
+
+
+******************************
+From code perspective:
+******************************
+
+
+**********************************************
+Initializing instructions (Phases 1 - 2):
+**********************************************
+
+
+build68k.c
+
+/*
+ * Read 68000 CPU specs from file "table68k" and build cpudefs.c
+ */
+
+int main(int argc, char **argv)
+{
+    int no_insns = 0;
+
+    printf ("#include \"sysconfig.h\"\n");
+    printf ("#include \"sysdeps.h\"\n");
+    printf ("#include \"readcpu.h\"\n");
+    printf ("struct instr_def defs68k[] = {\n");		<-- stdout to cpudefs.c file
+	
+    tablef = stdin;						<-- stdin from table68k file
+	
+
+
+
+cpudefs.c							<-- build68k outputted this file as its stdout
+
+#include "sysconfig.h"
+#include "sysdeps.h"
+#include "readcpu.h"
+struct instr_def defs68k[] = {							<-- array of instructions (readcpu.h)
+{ 60, 0, {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}, 65535, 0, 0, { { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }  }, 16, "ORSR.B  #1"},
+---
+int n_defs68k = 179;								<-- size of that array 
+
+
+
+readcpu.h
+
+struct instr_def {						<-- individual values (defs68k array) are stored using this
+    unsigned int bits;
+    int n_variable;
+    char bitpos[16];
+    unsigned int mask;
+    int cpulevel;
+    int plevel;
+    struct {
+	unsigned int flaguse:3;
+	unsigned int flagset:3;
+    } flaginfo[5];
+    unsigned char sduse;
+    const char *opcstr;
+};
+
+
+
+*********************************************************
+Generating actual opcodes from instructions (Phase 3)
+*********************************************************
+
+
+readcpu.h
+
+extern struct instr {					<-- using this structure create instructions
+    long int handler;
+    unsigned char dreg;
+    unsigned char sreg;
+    signed char dpos;
+    signed char spos;
+    unsigned char sduse;
+    int flagdead:8, flaglive:8;
+    unsigned int mnemo:8;;
+    unsigned int cc:4;
+    unsigned int plev:2;
+    unsigned int size:2;
+    unsigned int smode:5;
+    unsigned int stype:3;
+    unsigned int dmode:5;
+    unsigned int suse:1;
+    unsigned int duse:1;
+    unsigned int unused1:1;
+    unsigned int clev:3;
+    unsigned int isjmp:1;
+    unsigned int unused2:4;
+} *table68k;
+
+
+readcpu.c
+
+struct instr *table68k;									<-- table68k as a pointer is here
+
+
+
+
+gencomp.c										<-- JIT code compiler generator
+
+void read_table68k (void)
+{
+    int i;
+
+    table68k = (struct instr *)xmalloc (65536 * sizeof (struct instr));			<-- allocate table68k memory
+    for (i = 0; i < 65536; i++) {
+	table68k[i].mnemo = i_ILLG;
+	table68k[i].handler = -1;
+    }
+    for (i = 0; i < n_defs68k; i++) {
+	build_insn (i);
+    }
+}
+
+
+static void build_insn (int insn)
+{
+    int find = -1;
+    int variants;
+    int isjmp = 0;
+    struct instr_def id;
+    const char *opcstr;
+    int i;
+
+    int flaglive = 0, flagdead = 0;
+
+    id = defs68k[insn];									<-- table from cpudefs.c
+	
+	---
+	table68k[opc].size = sz;							<-- fill all rest of table68k fields	
+	table68k[opc].sreg = srcreg;
+	table68k[opc].dreg = destreg;
+	table68k[opc].smode = srcmode;
+	table68k[opc].dmode = destmode;
+	table68k[opc].spos = srcgather ? srcpos : -1;
+	table68k[opc].dpos = dstgather ? dstpos : -1;
+	table68k[opc].suse = usesrc;
+	table68k[opc].duse = usedst;
+	table68k[opc].stype = srctype;
+	table68k[opc].plev = id.plevel;
+	table68k[opc].clev = id.cpulevel;
+	table68k[opc].flagdead = flagdead;
+	table68k[opc].flaglive = flaglive;
+	table68k[opc].isjmp = isjmp;
+	---
+
+
+
+int
+main (int argc, char **argv)
+{
+    read_table68k ();									<-- defs68k[] conversion to table68k[]
+    do_merges ();									<-- byte / word ie. versions = same instruction in table68k
+
+    opcode_map = (int *) xmalloc (sizeof (int) * nr_cpuop_funcs);
+    opcode_last_postfix = (int *) xmalloc (sizeof (int) * nr_cpuop_funcs);
+    opcode_next_clev = (int *) xmalloc (sizeof (int) * nr_cpuop_funcs);
+    counts = (unsigned long *) xmalloc (65536 * sizeof (unsigned long));
+    read_counts ();
+
+    /* It would be a lot nicer to put all in one file (we'd also get rid of
+     * cputbl.h that way), but cpuopti can't cope.  That could be fixed, but
+     * I don't dare to touch the 68k version.  */
+
+    headerfile = fopen ("comptbl.h", "wb");			<--  compiling table
+    stblfile = fopen ("compstbl.c", "wb");			<--  compiling source table
+    freopen ("compemu.c", "wb", stdout);			<--  compemu.c will be stdout as a file
+
+    generate_includes (stdout);
+    generate_includes (stblfile);
+
+    printf("#include \"compemu.h\"\n");							<-- std-out to compemu.c
+
+    noflags=0;										<-- op_smalltbl_%d_comp_ff
+	generate_func (noflags);		
+
+    opcode_map = (int *) xmalloc (sizeof (int) * nr_cpuop_funcs);
+    opcode_last_postfix = (int *) xmalloc (sizeof (int) * nr_cpuop_funcs);
+    opcode_next_clev = (int *) xmalloc (sizeof (int) * nr_cpuop_funcs);
+    counts = (unsigned long *) xmalloc (65536 * sizeof (unsigned long));
+    read_counts ();
+    noflags=1;										<-- op_smalltbl_%d_comp_nf
+    generate_func (noflags);
+	
+	
+	
+static void
+generate_func (int noflags)
+{
+    int i, j, rp;
+
+	if (noflags)
+	    fprintf (stblfile, "struct cputbl op_smalltbl_%d_comp_nf[] = {\n", postfix);
+	else
+	    fprintf (stblfile, "struct cputbl op_smalltbl_%d_comp_ff[] = {\n", postfix);
+
+	---	
+	generate_one_opcode (rp,noflags);
+
+
+
+
+static void
+generate_one_opcode (int rp, int noflags)
+{
+
+    aborted=gen_opcode (opcode);
+
+
+
+
+static int  /* returns zero for success, non-zero for failure */
+gen_opcode (unsigned long int opcode)
+{
+	---
+	switch (curi->mnemo)								<-- different opcodes
+    {
+     case i_OR:
+     case i_AND:
+     case i_EOR:
+
+
+
+
+
+*************************************************************************************************************************
+
+Result files:
+
+
+comptbl.h										<-- gencomp.c stdout printed
+
+extern cpuop_func op_0_0_comp_ff;
+extern cpuop_func op_10_0_comp_ff;
+extern cpuop_func op_18_0_comp_ff;
+extern cpuop_func op_20_0_comp_ff;
+extern cpuop_func op_28_0_comp_ff;
+extern cpuop_func op_30_0_comp_ff;
+
+
+
+compstbl.c										<-- gencomp.c stdout printed
+
+struct cputbl op_smalltbl_0_comp_ff[] = {
+{ op_0_0_comp_ff, 0x00000002, 0 }, /* OR */
+{ op_10_0_comp_ff, 0x00000002, 16 }, /* OR */
+{ op_18_0_comp_ff, 0x00000002, 24 }, /* OR */
+{ op_20_0_comp_ff, 0x00000002, 32 }, /* OR */
+{ op_28_0_comp_ff, 0x00000002, 40 }, /* OR */
+{ op_30_0_comp_ff, 0x00000002, 48 }, /* OR */
+{ op_38_0_comp_ff, 0x00000002, 56 }, /* OR */
+{ op_39_0_comp_ff, 0x00000002, 57 }, /* OR */
+---
+
+
+compemu.c										<-- gencomp.c stdout printed
+
+
+unsigned long REGPARAM2 op_0_0_comp_ff(uae_u32 opcode) /* OR */
+{
+	uae_u32 dstreg = opcode & 7;
+	uae_u32 dodgy=0;
+	uae_u32 m68k_pc_offset_thisinst=m68k_pc_offset;
+	m68k_pc_offset+=2;
+{	uae_u8 scratchie=S1;
+{	int src = scratchie++;
+	mov_l_ri(src,(uae_s32)(uae_s8)comp_get_ibyte((m68k_pc_offset+=2)-2));
+{	int dst=dstreg;
+	dont_care_flags();
+{	start_needflags();
+	or_b(dst,src);
+	live_flags();
+	end_needflags();
+}	if(dstreg!=dst)
+		mov_b_rr(dstreg,dst);
+}}}	 if (m68k_pc_offset>100) sync_m68k_pc();
+return 0;
+}
+
+
+also:
+
+compemu.h					<--- manually prepared header for previous
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
