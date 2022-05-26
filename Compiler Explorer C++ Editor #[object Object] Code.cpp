@@ -121,7 +121,7 @@ STATIC_INLINE void put_long(uaecptr addr, uae_u32 l)
 }
 
 
-typedef void (*mem_put_func)(uaecptr, uae_u32) REGPARAM;
+// duplicate: typedef void (*mem_put_func)(uaecptr, uae_u32) REGPARAM;
 
 STATIC_INLINE uaecptr m68k_getpc (struct regstruct *regs)
 {
