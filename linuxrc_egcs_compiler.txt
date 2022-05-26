@@ -1,0 +1,12 @@
+https://gcc.gnu.org/pub/gcc/releases/egcs-1.1.2/egcs-core-1.1.2.tar.gz
+
+needs lex:
+	sudo apt-get install bison flex
+
+	mkdir build
+	../configure --prefix=/opt/egcs --host=i686-linux
+	make
+	sudo make install
+
+
+ecgs-i686-linux-gcc 2.91.66
