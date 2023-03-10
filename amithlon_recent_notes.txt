@@ -1,0 +1,139 @@
+
+ Re: Umilator Demo CD
+Posted on 23-Feb-2023 0:35:02
+
+@Karlos
+
+The reason why Amithlon (and by descent, Umilator) were so fast is that, despite many claims to the contrary, it isn't just UAE with the customs chip emulation thrown out.
+
+In UAE's JIT, which has to play nice with any underlying OS, memory accesses in high compatibility mode are done through a table lookup and function call. In so-called "direct memory access" mode, they are still done that way during the initial, pre-compile phase, and the JIT just logs whether they hit RAM or anything special. Then at compile time, the instructions that hit RAM are assumed to always hit RAM. And the RAM is allocated from the host OS at addresses which have a constant offset from the Amiga's addresses for it, so the memory access "just" has to add that offset.
+
+In Amithlon, the host OS instead plays nice with the emulator. The addresses the emulated Amiga sees are the same as the x86 side sees --- no need for any offset. Which is problematic, because some of the addresses the Amiga is quite firm about are where a 2001 era PC maps the PCI bus by default. So one of the first things Amithlon does on boot up is to remap all the PCI space somewhere else.
+And it's all memory accesses that simply hit the exact same address in x86 address space. Anything that isn't access to actual RAM or ROM is caught by the MMU, and the appropriate handler is called that way.
+
+Also, in UAE (at least back then), the custom chip emulation's state is updated in the main thread -- which means that the JIT must keep track of roughly how much work it has done, and occasionally, exit to advance that emulation. The same applies for 68k interrupts --- if any of them happen, the JIT'ed code must be exited; And finding out whether any happened (e.g. because of keyboard input) also requires periodic checking with the OS. And while I cut the keeping-track effort down as much as possible, it, and especially the checking, really slowed things down (the checking, by necessity, clobbers the flags, so whatever 68k flags are held in the x86 flags at the time must be saved, and later restored --- which aren't fast operations).
+In contrast, in Amithlon, what custom chips remain (mainly the CIAs) have their state calculated on-demand, from the x86's cycle counter. And any 68k interrupts are actually interrupts on the x86 side, which then get passed to the emulator as signals (i.e. actually interrupt the program execution). They still require a well-defined exit from the JIT'ed code, but that is realised by sprinkling JSR instructions throughout that code, to an address that usually simply holds a RET. That kind of thing is blindingly fast, because everything is cached. Also, it doesn't clobber anything. So if an exit is required, the RET is replaced with a JMP to somewhere that knows how to look up where the matching code to unwind the emulation state for any given JSR can be found, replaces the return address on the stack with it, and then does a RET. That's painfully slow, of course, as it's self-modifying code, and replacing the return address causes a mis prediction from the corresponding cache --- but when the CPU is blindingly fast, interrupts are so (relatively) rare that it doesn't matter.
+
+There is lots more hackery like that. Some is really clever. Some is truly awful, involving nasty hacks in the kernel itself, FFS, and I'd be ashamed because of it --- except for the simple fact that it does its job, it makes things faster.
+
+Building that sort of no-holds-barred, anything-goes collection of weird and wonderful hacks was great fun; Still, the result gave Amithlon performance a CPU generation or two ahead of UAE. Or maybe even three, on a good day. It's now 2023, and we are, what, a dozen CPU generations further along, and there hasn't really been any 68k software development in the meantime. So whatever Amithlon could do in 2002, UAE can easily do faster today, without any of the nasty hacks, and with at least the option of dialing up compatibility.
+
+
+
+	
+
+@Karlos
+
+Quote:
+
+I wondered how feasible it would be to provide an RTG implementation that allowed AmigaOS accessible VRAM allocation for BitMaps while still providing the ability to virtualise drawing operations on them via a native path that could make use of hardware acceleration on the kernel/Linux side.
+
+
+Definitely very feasible --- so feasible, in fact, that that's exactly what Amithlon/Umilator were doing. The kernel graphics drivers back then had some low-level hardware acceleration which was exposing functions pretty much comparable to the P96 card interface (because both were simply providing a thin veneer over what the gfx chips of the era offered in hardware). My custom kernel exposed some more of that to user space than a standard one, and IIRC I taught some of the drivers a couple extra functions --- but yeah, P96 was definitely hitting the actual hardware. Which is one of the reasons for...
+Quote:
+even on my then much older PC, Amithlon was a much smoother experience than, at least for me, UAE is today.
+
+with the major other one being the same approach on the input side (see above --- the PS/2 mouse causes actual hardware interrupts, which immediately get passed on and immediately change the state of the emulated CIA.
+
+A third, minor reason might have to do with the JIT compiler's approach to invalidating[1] cache. The approach in UAE/JIT can, in extreme cases, introduce human-noticeable latencies; I.e. it may keep the host CPU busy tearing down data structures for tens of milliseconds. Not much of a problem on UAE, as (a) it's quite rare, and (b) such latencies are not uncommon, anyway, due to the layers of emulation in both input and output.
+In Amithlon, where 68k drivers actually drive things like (some) network and (some) sound cards, such latencies were, of course, not viable, so I spent a lot of time designing data structures that replaced the one-time walk over the whole JIT cache with spread-out, on-demand operations triggered whenever a piece of "invalidated" code is actually used.[2]
+
+So yes, as you put it:
+Quote:
+there was more to it than just "no custom chip overhead",
+
+
+
+[1]: Due to some applications, and especially Mac emulators, being extremely trigger happy with invalidating ICache (having been written for processors where that cache is, relatively, tiny), actually discarding all the translated code is not an option. Instead, each translated block "just" gets marked so that prior to it running next time, a check is performed on whether any 68k code has changed since it was last compiled. If not, the block is marked as valid again; If yes, the block is actually invalidated, and will eventually be recompiled.
+[2]: If I recall correctly, this was already done in UAE/JIT. However, in UAE/JIT, marking each block literally involved accessing each block; In Amithlon, it instead was an O(1) operation.
+
+
+
+
+
+@umisef
+
+Quote:
+They still require a well-defined exit from the JIT'ed code, but that is realised by sprinkling JSR instructions throughout that code, to an address that usually simply holds a RET. That kind of thing is blindingly fast, because everything is cached. Also, it doesn't clobber anything. So if an exit is required, the RET is replaced with a JMP to somewhere that knows how to look up where the matching code to unwind the emulation state for any given JSR can be found, replaces the return address on the stack with it, and then does a RET.
+
+
+Upon further reminiscing, I realise that the above actually described what I used in a (never released) 68k=>PPC JIT for UAE.
+
+In Amithlon however, I tried that initially, but eventually came up with a much uglier (and, of course, faster :) hack --- rather than the JSR, the compiler will simply sprinkle writes to a special address. Those writes had both immediate address and data, so didn't touch any registers, didn't clobber any flags, and (unlike the JSR/RET combo) is fully pipelineable and reorderable. Being 9 (or 10?) bytes long was a bit of a bummer, but a lot of the time, that write still got scheduled in an otherwise unused execution slot, and didn't add any extra execution time.
+
+When the need arose to exit the JITed code, Amithlon would use the MMU to write-protect the address in question, so the write would cause a segmentation fault. For speed reasons, segfaults to that special address were caught and handled inside the kernel; The handler would simply set the PC to the value written, and return. So the JIT compiler would put "MOV 0x12345678,(0x9abcdef0)" instructions in, which, in effect, turned into "Jump to 0x12345678 if there is a need to exit compiled code, otherwise do nothing" --- with 0x12345678 being the address of the code that would unwind the execution state at that point.
+
+Last edited by umisef on 26-Feb-2023 at 01:22 PM.
+
+
+
+
+@Karlos
+
+Quote:
+purely hypothetically, assume you had some Linux native Vulkan driver
+
+
+I am afraid I haven't got the slightest clue how 3D works, on either side. So I really couldn't tell.
+
+But to flesh out the Amithlon graphics system description --- the VRAM "simply" exists in PCI space, as does the memory-mapped IO. Back then, graphics cards were relatively simple; There was RAM, and there were registers. Some registers could be used to fill command pipelines, but (best as I ever knew), RAM was simply there for things to be displayed.
+
+So Amithlon mapped all the PCI space into the 68k address space, and P96 was handed the actual gfx card memory when it asked for gfx card memory.
+
+In theory, it would have been quite possible to handle the register stuff from 68k, too --- I certainly did that at times, by fooling some libraries into believing I had a Mediator. S3 Virge, Permedia2, and Voodoo were all things I had going at some point. Never allowed that out of the lab, of course, due to those 68k drivers being, uhm, "problematic"...
+
+Also, those weren't cards typically found in PCs; nVidia, ATI and Matrox were "it", and I sure as hell wasn't going to start writing P96 drivers for them. So anything requiring register access was passed to x86, and straight into the kernel, where the kernel FB drivers had a lot of accelerated drawing functions, as well as mode setting functions available (albeit not usually fully exposed to userland). How to go from "I want to blit a block from (x1/y1/x2/y2) to (x3/y3)" to writing magic values into registers was the kernel drivers' problem, not mine.
+
+Of course, ideally one should be able to do make that request, and then go do something else while it's being handled. Memories of how that was handled are fuzzy --- I believe P96 has a "check whether all operations have completed" API call which took some wrangling to satisfy in that setup. But it was all doable.
+
+
+
+Now, as I keep saying, it's 2023. Even cheap gfx cards have more memory than AmigaOS can handle, never mind P96. And my (very, very vague) impression is that all that lovely 2D acceleration stuff has disappeared from gfx cards, and if at all implemented, is implemented on the GPU. But mostly things get composited, not moved.
+On the plus side, compositing is trivial, and gfx card bandwidth is insane. So if one were to do it again in 2023, a viable approach might be to (a) reserve 128M or so of gfx memory for P96, (b) map those 128M into 68k space, (c) implement P96 blits/line draws/circles/text etc in x86 native code, then (d) have a 3D system running on the x86 side which supports OpenGL (or Vulcan, or whatever --- can you tell I am not a 3D person? :), and has the ability to composite the P96 frame buffer into the actual display surface. And (e) make that the default, which can be manipulated through a 68k->x86 OpenGL tunnel, but can also be restored through some key combo.
+
+Oh, and maybe don't use P96, but whatever RTG system AROS comes with these days. P96 licensing hasn't been without issues over the years...
+
+
+
+
+@fishy_fis
+
+Quote:
+Strangely the Amithlon system gives higher scores for fpu performance for synthetic tests despite the WinUAE host having probably 10x+ single threaded speed and using multiple threads vs Amithlon's one.
+
+
+Any idea what UAE uses for FPU emulation these days? They might have moved everything to 64 bit, at which point the support for x87 FPU disappears, and good riddance! You get lovely XMM (I think?) vector FPU support instead, with actual registers and, I believe, even three operand instructions.
+
+But there are two drawbacks: (a) XMM and descendants all "only" support 64 bit FP values at most, so are not really good enough to emulate the 80-bit-supporting 68k FPUs, and (b) the original UAE/JIT FPU support is for the insane x87 stack based nonsense. So while moving the original UAE/JIT's integer support to x86/64 could largely be done by generating 32 bit prefixes all over the place, moving FPU support to 64 bits would require a complete rewrite, pretty much from scratch. And then, the result would still be somewhat incompatible, due to lack of 80 bit support --- the UAE folk are very keen on high compatibility.
+
+So I wouldn't rule out that they simply decided it wasn't worth the hassle, and switched FPU back to being fully emulated (which, I believe, can be done quite speedily while completely ignoring the native FPU).
+
+
+Note, though, that this is purely speculation --- I have zero idea what's going on inside UAE these days!
+
+
+
+
+@Karlos
+
+Quote:
+
+Karlos wrote:
+I can't speak for Bernie but if I had to guess, Linux was chosen because it got the job done and allowed him to realise his ideas.
+
+
+Precisely. Harald's original proposal actually was to build something like Amithlon on top of AROS. No, not using AROS inside the emulation, to replace AmigaOS, but underneath it, to do the job Linux ended up doing.
+
+I don't know what the situation is these days, but back then, AROS simply wasn't up to the job. It was quite picky about what hardware it would run on bare-metal. It also lacked a lot of the fun MMU functionality I so enjoy abusing :)
+
+Also, as Lasse put it,
+Quote:
+back then he was a linux guy
+
+
+I started using Linux in '91, in the 0.95 days --- when "using Linux" meant something quite different from today. So ten years later, I felt quite at home inside the kernel.
+Scarily enough, another 20+ years later, despite all my work having been done under linux for all that time, modern kernels intimidate me :-/
+
+Last edited by umisef on 01-Mar-2023 at 11:02 AM.
+
+
