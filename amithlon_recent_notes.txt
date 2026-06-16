@@ -137,3 +137,10 @@ Scarily enough, another 20+ years later, despite all my work having been done un
 Last edited by umisef on 01-Mar-2023 at 11:02 AM.
 
 
+
+
+
+Some quotes from a long text from Bernd Meyer
+ 
+Umilator's CPU emulation actually duplicated some existing CPU instructions in some unused opcode slots, and the included binary images were modified to use some of those duplicated instructions --- meaning if the binaries were copied to a real 68k CPU, or any other 68k emulator, they would crash and burn when they hit those supposed-to-be-unused opcodes.
+
